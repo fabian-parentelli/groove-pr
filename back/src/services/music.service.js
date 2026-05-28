@@ -1,4 +1,4 @@
-import { musicRepository, activityRepository, listRepository } from "../repositories/index.repositories.js";
+import { musicRepository, activityRepository, listRepository, albumRepository } from "../repositories/index.repositories.js";
 import { formatYoTube, getYoutubeId } from "../utils/support/music.suport.js";
 import { getPlayListApi } from '../helpers/getPlayList.api.js';
 import { getVideoInfoApi } from '../helpers/getVideoInfo.api.js';
@@ -18,7 +18,8 @@ const postMusic = async (body, user) => {
         if (!videoIds && videoIds.length == 0) throw new CustomNotFound('Error al traer los listId de Youtube');
         music = await getVideoInfoApi(videoIds);
     } else music = await getVideoInfoApi([id]);
-    const musicFormat = formatYoTube(music);
+
+    const musicFormat = formatYoTube(music, body);
 
     const saveMusic = await musicRepository.postMany(musicFormat);
     if (!saveMusic || saveMusic.length === 0) throw new CustomNotFound('No se insertó ninguna canción, todas ya existían');
@@ -31,27 +32,35 @@ const postMusic = async (body, user) => {
         return { status: 'success', result: saveMusic.upsertedIds[0] };
     };
 
-    const saveList = await listRepository.postList({ name: body.name, list: videoIds, uid: user._id, originUrl: body.path });
-    if (!saveList) throw new CustomNotFound('Error al guardar la lisat');
+    const objSave = {
+        name: body.name, list: videoIds, uid: user._id, originUrl: body.path, img: musicFormat[0].img
+    };
+
+    let result;
+    if (body.is === 'list') result = await listRepository.postList(objSave);
+    else result = await albumRepository.postAlbum({ ...objSave, author: body.author });
+
+    if (!result) throw new CustomNotFound('Error al guardar la lisat');
 
     setImmediate(async () => {
-        await activityRepository.postActivity({ eid: saveList._id, uid: user._id, type: 'newList' });
+        await activityRepository.postActivity({ eid: result._id, uid: user._id, type: 'newList' });
         await postCategory(musicFormat);
     });
 
-    return { status: 'success', result: saveList._id };
+    return { status: 'success', result: result._id };
 };
 
 const getSearch = async ({ id }) => {
     const song = await musicRepository.getById(id);
     if (!song) throw new CustomNotFound('Error al traer la canción de db');
     let result = await musicRepository.getSearch(song.topics);
-    if(!result) throw new CustomNotFound('Error al tarer el resto de las canciones');
+    if (!result) throw new CustomNotFound('Error al tarer el resto de las canciones');
     result.unshift(song);
     return { status: 'success', result };
 };
 
-const getMusic = async ({ page = 1, limit = 1, active = true, lid, category, random = false, yids, name }) => {
+const getMusic = async ({ 
+    page = 1, limit = 1, active = true, lid, category, random = false, yids, name, id, author }) => {
 
     // validar datos
     const query = {};
@@ -64,7 +73,11 @@ const getMusic = async ({ page = 1, limit = 1, active = true, lid, category, ran
         return { status: 'success', result: { songs, listName: list.name, lid } };
     };
 
-    if (category) query.topics = category;
+    if (id) query._id = id;
+
+    if (category) query.topics = { $in: [category] };
+    if (author) query.author = { $regex: author, $options: 'i' };
+
     if (active !== undefined) query.active = active;
     if (yids) query.yid = { $in: yids.split(',') };
 
@@ -79,8 +92,8 @@ const getMusic = async ({ page = 1, limit = 1, active = true, lid, category, ran
 
     let result;
     if (random) {
-        if (active !== undefined) query.active = active === "true";
-        result = await musicRepository.getRandom(query, limit)
+        if (active !== undefined) query.active = active === true || active === 'true';
+        result = await musicRepository.getRandom(query, +limit || 24)
     } else result = await musicRepository.getMusic(query, page, limit);
 
     if (!result) throw new CustomNotFound('Error al tarer al traer las canciones');
